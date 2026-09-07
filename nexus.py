@@ -80,6 +80,18 @@ def line(char="=", length=70):
     print(char * length)
 
 
+def header():
+    print()
+    print("=" * 70)
+    print("                     NEXUS OSINT")
+    print("              Public Information &")
+    print("               Network Analysis Tool")
+    print()
+    print(f"                       Version {VERSION}")
+    print("=" * 70)
+    print()
+
+
 def section(number, title):
     print()
     line("-", 70)
