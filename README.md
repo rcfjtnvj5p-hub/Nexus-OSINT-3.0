@@ -47,7 +47,7 @@ Installation
 
 Clone the repository:
 
-git clone https://github.com/YOUR-USERNAME/Nexus-OSINT.git
+git clone https://github.com/rcfjtnvj5p-hub/Nexus-OSINT.git
 cd Nexus-OSINT
 
 Run the program:
@@ -148,7 +148,7 @@ See LICENSE for the full license text.
 
 Author
 
-Created by YOUR-USERNAME.
+Created by NexusTech.
 
 ⸻
 
