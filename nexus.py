@@ -1,1244 +1,397 @@
-import urllib.request
-import urllib.error
-import socket
-import ssl
-import platform
-import ipaddress
+#!/usr/bin/env python3
+"""NEXUS OSINT 3.0 - Public Information & Network Analysis Tool.
+Standard library only. Use only on systems/information you are authorized to analyze.
+"""
 import concurrent.futures
 import datetime
-import re
-import json
-import sys
-import time
-
-
-# ============================================================
-# NEXUS OSINT 3.0
-# ============================================================
-#
-# 100 % Python Standard Library
-#
-# Aucune installation nécessaire.
-#
-# Modules :
-#   - Profils publics
-#   - DNS IPv4 / IPv6
-#   - HTTP / HTTPS
-#   - TLS / certificat
-#   - Headers HTTP
-#   - robots.txt
-#   - IP publique
-#   - Analyse IP
-#   - Informations machine locale
-#   - Informations réseau local
-#   - Scan TCP limité sur une cible choisie
-#   - Analyse parallèle
-#   - Rapport TXT
-#
-# Le programme ne tente pas d'obtenir :
-#   - Apple ID
-#   - position privée
-#   - appareil distant
-#   - Wi-Fi/Bluetooth distant
-#   - données privées de comptes
-#
-# ============================================================
-
+import ipaddress
+import platform
+import socket
+import ssl
+import urllib.error
+import urllib.parse
+import urllib.request
 
 VERSION = "3.0"
-
-TIMEOUT = 5
-
-USER_AGENT = (
-    "Mozilla/5.0 "
-    "(Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 "
-    "(KHTML, like Gecko) "
-    "Chrome/120.0 Safari/537.36 "
-    "NexusOSINT/3.0"
-)
-
+TIMEOUT = 8
 REPORT = []
 
 
-# ============================================================
-# UTILITAIRES
-# ============================================================
-
-def now():
-    return datetime.datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-
-def log(message):
+def log(message=""):
     print(message)
-    REPORT.append(message)
+    REPORT.append(str(message))
 
 
 def line(char="=", length=70):
-    print(char * length)
+    log(char * length)
+
+
+def header():
+    log()
+    line()
+    log("                     NEXUS OSINT")
+    log("              Public Information &")
+    log("               Network Analysis Tool")
+    log()
+    log(f"                       Version {VERSION}")
+    line()
+    log()
 
 
 def section(number, title):
-    print()
+    log()
     line("-", 70)
-    print(f"[TASK {number:02d}] {title}")
+    log(f"[TASK {number:02d}] {title}")
     line("-", 70)
 
 
-def progress(text, duration=0.5):
-
-    steps = 20
-
-    for i in range(steps + 1):
-
-        percent = int((i / steps) * 100)
-
-        filled = int(i / 2)
-
-        bar = (
-            "#" * filled +
-            "-" * (10 - filled)
-        )
-
-        sys.stdout.write(
-            f"\r[{bar}] {percent:3d}% {text}"
-        )
-
-        sys.stdout.flush()
-
-        time.sleep(
-            duration / steps
-        )
-
-    print()
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except (KeyboardInterrupt, EOFError):
+        log("\n[!] Interrupted.")
+        return ""
 
 
-# ============================================================
-# HTTP
-# ============================================================
+def normalize_domain(value):
+    value = value.strip()
+    if "://" in value:
+        value = urllib.parse.urlparse(value).hostname or ""
+    value = value.split("/")[0].split(":")[0]
+    return value.lower().strip(".")
 
-def create_request(url):
 
-    return urllib.request.Request(
+def http_request(url, method="GET"):
+    req = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "*/*"
+        headers={"User-Agent": f"NEXUS-OSINT/{VERSION}", "Accept": "*/*"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+            return {
+                "status": response.status,
+                "reason": response.reason,
+                "headers": dict(response.headers),
+                "final_url": response.geturl(),
+                "body": response.read(4096),
+                "error": None,
+            }
+    except urllib.error.HTTPError as exc:
+        return {
+            "status": exc.code,
+            "reason": str(exc.reason),
+            "headers": dict(exc.headers),
+            "final_url": exc.geturl(),
+            "body": exc.read(4096),
+            "error": f"HTTP {exc.code}: {exc.reason}",
         }
-    )
-
-
-def http_request(url):
-
-    request = create_request(url)
-
-    return urllib.request.urlopen(
-        request,
-        timeout=TIMEOUT
-    )
-
-
-# ============================================================
-# TASK 01
-# PROFILS PUBLICS
-# ============================================================
-
-def check_profile(platform_name, url):
-
-    try:
-
-        response = http_request(url)
-
-        status = response.status
-
-        response.close()
-
-        if status == 200:
-            result = "ACCESSIBLE"
-
-        else:
-            result = f"HTTP {status}"
-
-        return platform_name, result
-
-    except urllib.error.HTTPError as error:
-
-        if error.code == 404:
-            return platform_name, "NOT FOUND"
-
-        if error.code == 403:
-            return platform_name, "ACCESS DENIED"
-
-        return platform_name, f"HTTP {error.code}"
-
-    except urllib.error.URLError:
-
-        return platform_name, "NETWORK ERROR"
-
-    except Exception as error:
-
-        return platform_name, f"ERROR: {error}"
-
-
-def public_profiles(username):
-
-    section(1, "PUBLIC PROFILE CHECK")
-
-    username = username.strip().lstrip("@")
-
-    profiles = {
-
-        "Instagram":
-            f"https://www.instagram.com/{username}/",
-
-        "GitHub":
-            f"https://github.com/{username}",
-
-        "Reddit":
-            f"https://www.reddit.com/user/{username}/",
-
-        "TikTok":
-            f"https://www.tiktok.com/@{username}",
-
-        "YouTube":
-            f"https://www.youtube.com/@{username}"
-    }
-
-    print(
-        "[*] Running checks in parallel..."
-    )
-
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=5
-    ) as executor:
-
-        futures = [
-            executor.submit(
-                check_profile,
-                name,
-                url
-            )
-            for name, url in profiles.items()
-        ]
-
-        for future in concurrent.futures.as_completed(
-            futures
-        ):
-
-            name, result = future.result()
-
-            print(
-                f"[{name:<10}] {result}"
-            )
-
-            REPORT.append(
-                f"{name}: {result}"
-            )
-
-
-# ============================================================
-# TASK 02
-# DNS
-# ============================================================
-
-def dns_analysis(domain):
-
-    section(2, "DNS ANALYSIS")
-
-    domain = domain.strip()
-
-    if domain.startswith("https://"):
-        domain = domain[8:]
-
-    if domain.startswith("http://"):
-        domain = domain[7:]
-
-    domain = domain.split("/")[0]
-
-    print("[*] Domain:", domain)
-    print()
-
-    try:
-
-        results = socket.getaddrinfo(
-            domain,
-            None
-        )
-
-        ipv4 = set()
-        ipv6 = set()
-
-        for result in results:
-
-            address = result[4][0]
-
-            try:
-
-                ip = ipaddress.ip_address(
-                    address
-                )
-
-                if ip.version == 4:
-                    ipv4.add(address)
-
-                else:
-                    ipv6.add(address)
-
-            except ValueError:
-                pass
-
-        print("[+] IPv4:")
-
-        if ipv4:
-            for ip in sorted(ipv4):
-                print("    ->", ip)
-        else:
-            print("    None")
-
-        print()
-
-        print("[+] IPv6:")
-
-        if ipv6:
-            for ip in sorted(ipv6):
-                print("    ->", ip)
-        else:
-            print("    None")
-
-        REPORT.append(
-            f"DNS {domain}: "
-            f"IPv4={sorted(ipv4)} "
-            f"IPv6={sorted(ipv6)}"
-        )
-
-    except socket.gaierror as error:
-
-        print(
-            "[!] DNS error:",
-            error
-        )
-
-
-# ============================================================
-# TASK 03
-# HTTP HEADERS
-# ============================================================
-
-def http_analysis(url):
-
-    section(3, "HTTP / HTTPS ANALYSIS")
-
-    url = url.strip()
-
-    if not url.startswith(
-        ("http://", "https://")
-    ):
-        url = "https://" + url
-
-    print("[*] URL:", url)
-    print()
-
-    try:
-
-        response = http_request(url)
-
-        print(
-            "[+] Status:",
-            response.status
-        )
-
-        print(
-            "[+] Final URL:",
-            response.geturl()
-        )
-
-        print()
-
-        interesting_headers = [
-            "Server",
-            "Content-Type",
-            "Content-Length",
-            "Date",
-            "Location",
-            "Strict-Transport-Security",
-            "Content-Security-Policy",
-            "X-Frame-Options",
-            "X-Content-Type-Options",
-            "Referrer-Policy"
-        ]
-
-        for header in interesting_headers:
-
-            value = response.headers.get(
-                header
-            )
-
-            if value:
-
-                print(
-                    f"{header}: {value}"
-                )
-
-                REPORT.append(
-                    f"{header}: {value}"
-                )
-
-        response.close()
-
-    except urllib.error.HTTPError as error:
-
-        print(
-            "[!] HTTP error:",
-            error.code
-        )
-
-    except urllib.error.URLError as error:
-
-        print(
-            "[!] Connection error:",
-            error.reason
-        )
-
-    except Exception as error:
-
-        print(
-            "[!] Error:",
-            error
-        )
-
-
-# ============================================================
-# TASK 04
-# TLS
-# ============================================================
-
-def tls_analysis(hostname):
-
-    section(4, "TLS / CERTIFICATE ANALYSIS")
-
-    hostname = hostname.strip()
-
-    hostname = (
-        hostname
-        .replace("https://", "")
-        .replace("http://", "")
-        .split("/")[0]
-    )
-
-    print("[*] Host:", hostname)
-    print()
-
-    context = ssl.create_default_context()
-
-    try:
-
-        with socket.create_connection(
-            (hostname, 443),
-            timeout=TIMEOUT
-        ) as sock:
-
-            with context.wrap_socket(
-                sock,
-                server_hostname=hostname
-            ) as secure_socket:
-
-                print(
-                    "[+] TLS version:",
-                    secure_socket.version()
-                )
-
-                print(
-                    "[+] Cipher:",
-                    secure_socket.cipher()[0]
-                )
-
-                certificate = (
-                    secure_socket.getpeercert()
-                )
-
-                if certificate:
-
-                    subject = certificate.get(
-                        "subject",
-                        []
-                    )
-
-                    issuer = certificate.get(
-                        "issuer",
-                        []
-                    )
-
-                    not_before = certificate.get(
-                        "notBefore",
-                        "Unknown"
-                    )
-
-                    not_after = certificate.get(
-                        "notAfter",
-                        "Unknown"
-                    )
-
-                    print(
-                        "[+] Certificate subject:",
-                        subject
-                    )
-
-                    print(
-                        "[+] Certificate issuer:",
-                        issuer
-                    )
-
-                    print(
-                        "[+] Valid from:",
-                        not_before
-                    )
-
-                    print(
-                        "[+] Valid until:",
-                        not_after
-                    )
-
-                    REPORT.append(
-                        f"TLS {hostname}: "
-                        f"{secure_socket.version()} "
-                        f"{secure_socket.cipher()[0]}"
-                    )
-
-    except Exception as error:
-
-        print(
-            "[!] TLS error:",
-            error
-        )
-
-
-# ============================================================
-# TASK 05
-# ROBOTS.TXT
-# ============================================================
-
-def robots_analysis(domain):
-
-    section(5, "ROBOTS.TXT")
-
-    domain = domain.strip()
-
-    if domain.startswith(
-        ("http://", "https://")
-    ):
-        domain = domain.split("://", 1)[1]
-
-    domain = domain.split("/")[0]
-
-    url = (
-        "https://" +
-        domain +
-        "/robots.txt"
-    )
-
-    print("[*] URL:", url)
-    print()
-
-    try:
-
-        response = http_request(url)
-
-        content = response.read(
-            20000
-        ).decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        response.close()
-
-        if content:
-
-            print(
-                "[+] robots.txt retrieved"
-            )
-
-            print()
-
-            lines = content.splitlines()
-
-            displayed = 0
-
-            for item in lines:
-
-                if (
-                    item.strip() and
-                    not item.startswith("#")
-                ):
-
-                    print(
-                        "   ",
-                        item
-                    )
-
-                    displayed += 1
-
-                    if displayed >= 30:
-                        break
-
-        else:
-
-            print(
-                "[-] Empty robots.txt"
-            )
-
-    except Exception as error:
-
-        print(
-            "[!] robots.txt unavailable:",
-            error
-        )
-
-
-# ============================================================
-# TASK 06
-# IP PUBLIQUE
-# ============================================================
-
-def public_ip():
-
-    section(6, "PUBLIC IP")
-
-    services = [
-        "https://api.ipify.org",
-        "https://icanhazip.com"
-    ]
-
-    for service in services:
-
-        try:
-
-            response = http_request(
-                service
-            )
-
-            address = response.read().decode(
-                "utf-8",
-                errors="ignore"
-            ).strip()
-
-            response.close()
-
-            if address:
-
-                print(
-                    "[+] Public IP:",
-                    address
-                )
-
-                try:
-
-                    ip = ipaddress.ip_address(
-                        address
-                    )
-
-                    print(
-                        "[+] Version:",
-                        ip.version
-                    )
-
-                    print(
-                        "[+] Global:",
-                        ip.is_global
-                    )
-
-                    REPORT.append(
-                        f"Public IP: {address}"
-                    )
-
-                except ValueError:
-                    pass
-
-                return
-
-        except Exception:
-            continue
-
-    print(
-        "[!] Public IP unavailable."
-    )
-
-
-# ============================================================
-# TASK 07
-# LOCAL DEVICE
-# ============================================================
-
-def local_device():
-
-    section(7, "LOCAL DEVICE")
-
-    data = {
-
-        "System":
-            platform.system(),
-
-        "Release":
-            platform.release(),
-
-        "Version":
-            platform.version(),
-
-        "Machine":
-            platform.machine(),
-
-        "Processor":
-            platform.processor(),
-
-        "Python":
-            platform.python_version(),
-
-        "Hostname":
-            socket.gethostname()
-    }
-
-    for key, value in data.items():
-
-        print(
-            f"[+] {key:<12}: {value}"
-        )
-
-        REPORT.append(
-            f"{key}: {value}"
-        )
-
-
-# ============================================================
-# TASK 08
-# LOCAL NETWORK
-# ============================================================
-
-def local_network():
-
-    section(8, "LOCAL NETWORK")
-
-    hostname = socket.gethostname()
-
-    print(
-        "[*] Hostname:",
-        hostname
-    )
-
-    try:
-
-        results = socket.getaddrinfo(
-            hostname,
-            None
-        )
-
-        addresses = sorted(
-            set(
-                result[4][0]
-                for result in results
-            )
-        )
-
-        for address in addresses:
-
-            try:
-
-                ip = ipaddress.ip_address(
-                    address
-                )
-
-                print(
-                    f"[+] {address:<39} "
-                    f"IPv{ip.version}"
-                )
-
-            except ValueError:
-                pass
-
-    except Exception as error:
-
-        print(
-            "[!] Network error:",
-            error
-        )
-
-
-# ============================================================
-# TASK 09
-# IP ANALYSIS
-# ============================================================
-
-def ip_analysis():
-
-    section(9, "IP ANALYSIS")
-
-    value = input(
-        "Enter an IP address: "
-    ).strip()
-
-    try:
-
-        ip = ipaddress.ip_address(
-            value
-        )
-
-        print(
-            "[+] Address:",
-            ip
-        )
-
-        print(
-            "[+] Version:",
-            ip.version
-        )
-
-        print(
-            "[+] Private:",
-            ip.is_private
-        )
-
-        print(
-            "[+] Global:",
-            ip.is_global
-        )
-
-        print(
-            "[+] Loopback:",
-            ip.is_loopback
-        )
-
-        print(
-            "[+] Multicast:",
-            ip.is_multicast
-        )
-
-        print(
-            "[+] Reserved:",
-            ip.is_reserved
-        )
-
-        REPORT.append(
-            f"IP analysis: {ip}"
-        )
-
-    except ValueError:
-
-        print(
-            "[!] Invalid IP address."
-        )
-
-
-# ============================================================
-# TASK 10
-# LIMITED TCP CHECK
-# ============================================================
-
-def tcp_check():
-
-    section(10, "TCP CONNECTIVITY CHECK")
-
-    host = input(
-        "Host to check: "
-    ).strip()
-
-    if not host:
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return {"status": None, "reason": "", "headers": {}, "final_url": url,
+                "body": b"", "error": str(exc)}
+
+
+def resolve_dns(domain):
+    domain = normalize_domain(domain)
+    if not domain:
+        log("[!] Invalid domain.")
         return
-
-    ports = [
-        80,
-        443,
-        22,
-        21,
-        25,
-        53,
-        8080,
-        8443
-    ]
-
-    print()
-    print(
-        "[*] Checking a small set of common ports..."
-    )
-
-    for port in ports:
-
-        try:
-
-            with socket.create_connection(
-                (host, port),
-                timeout=1
-            ):
-
-                print(
-                    f"[+] {port:<5} OPEN / reachable"
-                )
-
-        except (
-            socket.timeout,
-            ConnectionRefusedError,
-            OSError
-        ):
-
-            print(
-                f"[-] {port:<5} closed / unavailable"
-            )
-
-
-# ============================================================
-# FULL ANALYSIS
-# ============================================================
-
-def full_analysis(username, domain):
-
-    section(
-        11,
-        "FULL NEXUS ANALYSIS"
-    )
-
-    progress(
-        "Initializing modules...",
-        0.5
-    )
-
-    public_profiles(username)
-
-    progress(
-        "DNS analysis...",
-        0.5
-    )
-
-    dns_analysis(domain)
-
-    progress(
-        "HTTP analysis...",
-        0.5
-    )
-
-    http_analysis(
-        "https://" + domain
-    )
-
-    progress(
-        "TLS analysis...",
-        0.5
-    )
-
-    tls_analysis(domain)
-
-    progress(
-        "robots.txt analysis...",
-        0.5
-    )
-
-    robots_analysis(domain)
-
-    progress(
-        "Local environment...",
-        0.5
-    )
-
-    local_device()
-
-    local_network()
-
-    public_ip()
-
-    print()
-    line()
-    print(
-        "             FULL ANALYSIS COMPLETE"
-    )
-    line()
-
-
-# ============================================================
-# RAPPORT
-# ============================================================
-
-def save_report():
-
-    filename = (
-        "nexus_report_"
-        + datetime.datetime.now().strftime(
-            "%Y%m%d_%H%M%S"
-        )
-        + ".txt"
-    )
-
+    log(f"[*] Domain: {domain}")
     try:
-
-        with open(
-            filename,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            file.write(
-                "NEXUS OSINT REPORT\n"
-            )
-
-            file.write(
-                "=" * 70 +
-                "\n"
-            )
-
-            file.write(
-                "Generated: "
-                + now() +
-                "\n\n"
-            )
-
-            for entry in REPORT:
-
-                file.write(
-                    str(entry) +
-                    "\n"
-                )
-
-        print()
-        print(
-            "[+] Report saved:",
-            filename
-        )
-
-    except Exception as error:
-
-        print(
-            "[!] Could not save report:",
-            error
-        )
+        infos = socket.getaddrinfo(domain, None)
+        ipv4 = sorted({x[4][0] for x in infos if ":" not in x[4][0]})
+        ipv6 = sorted({x[4][0] for x in infos if ":" in x[4][0]})
+        log(f"[+] IPv4: {', '.join(ipv4) if ipv4 else 'None'}")
+        log(f"[+] IPv6: {', '.join(ipv6) if ipv6 else 'None'}")
+    except socket.gaierror as exc:
+        log(f"[!] DNS resolution failed: {exc}")
 
 
-# ============================================================
-# MENU
-# ============================================================
-
-def menu(username, domain):
-
-    while True:
-
-        print()
-        line()
-        print(
-            "                    NEXUS MENU"
-        )
-        line()
-
-        print(
-            "1  - Public profile check"
-        )
-
-        print(
-            "2  - DNS analysis"
-        )
-
-        print(
-            "3  - HTTP / HTTPS analysis"
-        )
-
-        print(
-            "4  - TLS / certificate"
-        )
-
-        print(
-            "5  - robots.txt"
-        )
-
-        print(
-            "6  - Public IP"
-        )
-
-        print(
-            "7  - Local device"
-        )
-
-        print(
-            "8  - Local network"
-        )
-
-        print(
-            "9  - IP analysis"
-        )
-
-        print(
-            "10 - TCP connectivity check"
-        )
-
-        print(
-            "11 - FULL ANALYSIS"
-        )
-
-        print(
-            "12 - Save report"
-        )
-
-        print(
-            "0  - Exit"
-        )
-
-        print()
-
-        choice = input(
-            "Nexus > "
-        ).strip()
-
-        if choice == "1":
-
-            public_profiles(username)
-
-        elif choice == "2":
-
-            dns_analysis(domain)
-
-        elif choice == "3":
-
-            http_analysis(
-                "https://" + domain
-            )
-
-        elif choice == "4":
-
-            tls_analysis(domain)
-
-        elif choice == "5":
-
-            robots_analysis(domain)
-
-        elif choice == "6":
-
-            public_ip()
-
-        elif choice == "7":
-
-            local_device()
-
-        elif choice == "8":
-
-            local_network()
-
-        elif choice == "9":
-
-            ip_analysis()
-
-        elif choice == "10":
-
-            tcp_check()
-
-        elif choice == "11":
-
-            full_analysis(
-                username,
-                domain
-            )
-
-        elif choice == "12":
-
-            save_report()
-
-        elif choice == "0":
-
-            print()
-            print(
-                "[*] Nexus shutting down..."
-            )
-
+def analyze_http(domain):
+    domain = normalize_domain(domain)
+    if not domain:
+        log("[!] Invalid domain.")
+        return
+    for scheme in ("https", "http"):
+        url = f"{scheme}://{domain}/"
+        log(f"[*] Requesting {url}")
+        result = http_request(url)
+        if result["status"] is None:
+            log(f"[!] Connection failed: {result['error']}")
+            continue
+        log(f"[+] Status: {result['status']} {result['reason']}")
+        log(f"[+] Final URL: {result['final_url']}")
+        for name, value in result["headers"].items():
+            if name.lower() in {
+                "server", "content-type", "content-length", "location",
+                "strict-transport-security", "x-powered-by",
+                "x-frame-options", "content-security-policy",
+            }:
+                log(f"    {name}: {value}")
+        if scheme == "https":
             break
 
+
+def inspect_tls(domain):
+    domain = normalize_domain(domain)
+    if not domain:
+        log("[!] Invalid domain.")
+        return
+    log(f"[*] TLS inspection: {domain}:443")
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=TIMEOUT) as sock:
+            with context.wrap_socket(sock, server_hostname=domain) as tls:
+                cert = tls.getpeercert()
+                log(f"[+] TLS version: {tls.version()}")
+                cipher = tls.cipher()
+                log(f"[+] Cipher: {cipher[0] if cipher else 'Unknown'}")
+                subject = cert.get("subject", ())
+                issuer = cert.get("issuer", ())
+                def flatten(value):
+                    return ", ".join(f"{k}={v}" for group in value for k, v in group)
+                log(f"[+] Subject: {flatten(subject) or 'Unknown'}")
+                log(f"[+] Issuer: {flatten(issuer) or 'Unknown'}")
+                log(f"[+] Expires: {cert.get('notAfter', 'Unknown')}")
+    except Exception as exc:
+        log(f"[!] TLS inspection failed: {exc}")
+
+
+def check_robots(domain):
+    domain = normalize_domain(domain)
+    if not domain:
+        log("[!] Invalid domain.")
+        return
+    url = f"https://{domain}/robots.txt"
+    log(f"[*] Checking {url}")
+    result = http_request(url)
+    if result["status"] is None:
+        log(f"[!] Request failed: {result['error']}")
+        return
+    log(f"[+] HTTP status: {result['status']}")
+    if result["status"] == 200:
+        text = result["body"].decode("utf-8", errors="replace")
+        lines = [x for x in text.splitlines() if x.strip() and not x.lstrip().startswith("#")]
+        for item in lines[:40]:
+            log(f"    {item}")
+
+
+def get_public_ip():
+    for url in ("https://api.ipify.org", "https://icanhazip.com"):
+        result = http_request(url)
+        if result["status"] == 200:
+            ip = result["body"].decode().strip()
+            try:
+                ipaddress.ip_address(ip)
+                log(f"[+] Public IP: {ip}")
+                return ip
+            except ValueError:
+                pass
+    log("[!] Unable to determine public IP.")
+    return None
+
+
+def local_device_info():
+    section(1, "LOCAL DEVICE INFORMATION")
+    log(f"[+] OS: {platform.system()} {platform.release()}")
+    log(f"[+] Platform: {platform.platform()}")
+    log(f"[+] Architecture: {platform.machine()}")
+    log(f"[+] Hostname: {socket.gethostname()}")
+    log(f"[+] Python: {platform.python_version()}")
+
+
+def local_network_info():
+    section(2, "LOCAL NETWORK INFORMATION")
+    try:
+        addresses = socket.getaddrinfo(socket.gethostname(), None)
+        ips = sorted({x[4][0] for x in addresses if x[4][0] not in ("127.0.0.1", "::1")})
+        if ips:
+            for ip in ips:
+                log(f"[+] Local address: {ip}")
         else:
+            log("[!] No non-loopback address detected.")
+    except socket.gaierror as exc:
+        log(f"[!] Network information unavailable: {exc}")
+    get_public_ip()
 
-            print(
-                "[!] Unknown command."
-            )
+
+def analyze_ip(value):
+    section(3, "IP ADDRESS ANALYSIS")
+    try:
+        ip = ipaddress.ip_address(value.strip())
+    except ValueError:
+        log("[!] Invalid IP address.")
+        return
+    log(f"[+] Address: {ip}")
+    log(f"[+] Version: IPv{ip.version}")
+    log(f"[+] Private: {'Yes' if ip.is_private else 'No'}")
+    log(f"[+] Global: {'Yes' if ip.is_global else 'No'}")
+    log(f"[+] Loopback: {'Yes' if ip.is_loopback else 'No'}")
+    log(f"[+] Multicast: {'Yes' if ip.is_multicast else 'No'}")
+    log(f"[+] Reserved: {'Yes' if ip.is_reserved else 'No'}")
+    try:
+        hostname, aliases, _ = socket.gethostbyaddr(str(ip))
+        log(f"[+] Reverse DNS: {hostname}")
+        if aliases:
+            log(f"[+] Aliases: {', '.join(aliases)}")
+    except (socket.herror, socket.gaierror):
+        log("[+] Reverse DNS: unavailable")
 
 
-# ============================================================
-# MAIN
-# ============================================================
+def tcp_check(host, port):
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def common_ports(domain):
+    section(5, "LIMITED TCP CONNECTIVITY CHECK")
+    domain = normalize_domain(domain)
+    if not domain:
+        log("[!] Invalid domain.")
+        return
+    ports = (22, 25, 53, 80, 110, 143, 443, 587, 993, 995)
+    log("[*] Small set of common TCP ports only.")
+    log("[*] Connectivity check, not a vulnerability scan.")
+    for port in ports:
+        state = "OPEN/REACHABLE" if tcp_check(domain, port) else "closed/unreachable"
+        log(f"    {port:>5}/tcp  {state}")
+
+
+PLATFORMS = {
+    "Instagram": "https://www.instagram.com/{}/",
+    "GitHub": "https://github.com/{}",
+    "Reddit": "https://www.reddit.com/user/{}/about/",
+    "TikTok": "https://www.tiktok.com/@{}",
+    "YouTube": "https://www.youtube.com/@{}",
+}
+
+
+def check_profile(name, username):
+    safe = urllib.parse.quote(username, safe="@._-")
+    url = PLATFORMS[name].format(safe)
+    result = http_request(url)
+    status = result["status"]
+    if status == 404:
+        state = "NOT FOUND"
+    elif status is not None and 200 <= status < 400:
+        state = "RESPONDED"
+    elif status is not None:
+        state = f"HTTP {status}"
+    else:
+        state = "ERROR"
+    return name, state, result["final_url"]
+
+
+def profile_search(username):
+    section(4, "PUBLIC PROFILE AVAILABILITY CHECK")
+    username = username.lstrip("@").strip()
+    if not username:
+        log("[!] Empty username.")
+        return
+    log(f"[*] Username: {username}")
+    log("[*] Public profile URLs only.")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+        jobs = [pool.submit(check_profile, name, username) for name in PLATFORMS]
+        for job in concurrent.futures.as_completed(jobs):
+            try:
+                name, state, url = job.result()
+                log(f"[+] {name:<10} {state:<18} {url}")
+            except Exception as exc:
+                log(f"[!] Profile check failed: {exc}")
+
+
+def domain_report(domain):
+    REPORT.clear()
+    header()
+    log(f"Target: {normalize_domain(domain)}")
+    log(f"Timestamp: {datetime.datetime.now().astimezone().isoformat()}")
+    section(1, "DNS RESOLUTION")
+    resolve_dns(domain)
+    section(2, "HTTP / HTTPS ANALYSIS")
+    analyze_http(domain)
+    section(3, "TLS CERTIFICATE")
+    inspect_tls(domain)
+    section(4, "ROBOTS.TXT")
+    check_robots(domain)
+    common_ports(domain)
+
+
+def save_report():
+    if not REPORT:
+        log("[!] No report data to save.")
+        return
+    filename = ask("Report filename [nexus_report.txt]: ") or "nexus_report.txt"
+    if not filename.endswith(".txt"):
+        filename += ".txt"
+    try:
+        with open(filename, "w", encoding="utf-8") as file:
+            file.write("\n".join(REPORT) + "\n")
+        log(f"[+] Report saved: {filename}")
+    except OSError as exc:
+        log(f"[!] Could not save report: {exc}")
+
+
+def show_about():
+    header()
+    log("NEXUS OSINT 3.0")
+    log("Public Information & Network Analysis Tool")
+    log("Python standard library only.")
+    log()
+    log("Public DNS, HTTP/HTTPS, TLS, local network, IP and profile checks.")
+    log("No private-account access, authentication bypass or remote control.")
+    log("Use responsibly and only on systems/information you are authorized to analyze.")
+
+
+def menu():
+    while True:
+        header()
+        log("[1] Local device information")
+        log("[2] Local network information")
+        log("[3] Analyze an IP address")
+        log("[4] Analyze a domain")
+        log("[5] Check a public username")
+        log("[6] Save current report")
+        log("[7] About / scope")
+        log("[0] Exit")
+        log()
+        choice = ask("NEXUS > ")
+        if choice == "1":
+            local_device_info()
+        elif choice == "2":
+            local_network_info()
+        elif choice == "3":
+            analyze_ip(ask("IP address > "))
+        elif choice == "4":
+            domain = ask("Domain > ")
+            if domain:
+                domain_report(domain)
+        elif choice == "5":
+            profile_search(ask("Username > "))
+        elif choice == "6":
+            save_report()
+        elif choice == "7":
+            show_about()
+        elif choice == "0":
+            log("\n[+] NEXUS OSINT terminated.")
+            return
+        else:
+            log("[!] Invalid option.")
+        log()
+        if choice != "0":
+            ask("Press Enter to continue...")
+
 
 def main():
+    try:
+        menu()
+    except KeyboardInterrupt:
+        log("\n[!] NEXUS OSINT interrupted by user.")
+    except Exception as exc:
+        log(f"\n[!] Unexpected error: {exc}")
 
-    header()
-
-    print(
-        "NEXUS OSINT 3.0"
-    )
-
-    print(
-        "Standard Library Edition"
-    )
-
-    print()
-    print(
-        "No external packages required."
-    )
-
-    print()
-
-    username = input(
-        "Target username: "
-    ).strip()
-
-    username = username.lstrip("@")
-
-    if not username:
-
-        print(
-            "[!] Username required."
-        )
-
-        return
-
-    print()
-
-    domain = input(
-        "Target domain (example.com): "
-    ).strip()
-
-    if not domain:
-
-        print(
-            "[!] Domain required."
-        )
-
-        return
-
-    domain = (
-        domain
-        .replace("https://", "")
-        .replace("http://", "")
-        .split("/")[0]
-    )
-
-    print()
-    line()
-
-    print(
-        "TARGET USERNAME :",
-        username
-    )
-
-    print(
-        "TARGET DOMAIN   :",
-        domain
-    )
-
-    print(
-        "START TIME      :",
-        now()
-    )
-
-    line()
-
-    menu(
-        username,
-        domain
-    )
-
-
-# ============================================================
-# START
-# ============================================================
 
 if __name__ == "__main__":
     main()
